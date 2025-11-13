@@ -44,9 +44,38 @@ The index will be maintained incrementally, with efficient update strategies to 
 3. **Refactoring Support**: Understand impact of changes across a codebase
 4. **Documentation Generation**: Extract and organize code documentation
 
+## Current Implementation
+
+Cratographer is currently implemented as an MCP server using the official Rust SDK (`rmcp`). The server provides two tools:
+
+- **find_symbol**: Find all occurrences of a Rust symbol (struct, enum, trait, function, method) by name
+- **enumerate_file**: Enumerate all Rust symbols defined in a specific file
+
+### Running the Server
+
+```bash
+cargo build --release
+cargo run
+```
+
+The server communicates via stdio and follows the MCP protocol specification.
+
 ## Status
 
-This project is in early development.
+**Phase 1 - MCP Server Foundation**: ✅ Complete
+- Basic MCP server structure implemented
+- Two core tools defined (find_symbol, enumerate_file)
+- Server compiles and runs
+
+**Phase 2 - Tool Implementation**: 🚧 In Progress
+- Tools currently return placeholder responses
+- Need to implement actual Rust code parsing and indexing
+- Will integrate rust-analyzer or syn for code analysis
+
+**Phase 3 - Advanced Features**: 📋 Planned
+- Incremental index updates
+- Cross-crate analysis
+- Performance optimization
 
 ## License
 
