@@ -182,8 +182,64 @@ impl Analyzer {
                     (0, 0)
                 };
 
-                // Extract documentation
-                let documentation = nav.docs.as_ref().map(|d| d.as_str().to_string());
+                // Extract documentation using hover
+                // Use the focus range if available, otherwise use the start of full range
+                let focus_range = nav.focus_range.unwrap_or(range);
+                let file_range = ra_ap_ide::FileRange {
+                    file_id,
+                    range: focus_range,
+                };
+
+                let documentation = analysis.hover(&ra_ap_ide::HoverConfig {
+                    links_in_hover: false,
+                    memory_layout: None,
+                    documentation: true,
+                    keywords: false,
+                    format: ra_ap_ide::HoverDocFormat::Markdown,
+                    max_trait_assoc_items_count: None,
+                    max_fields_count: None,
+                    max_enum_variants_count: None,
+                    max_subst_ty_len: ra_ap_ide::SubstTyLen::Unlimited,
+                    show_drop_glue: false,
+                    minicore: &ra_ap_ide::MiniCore::default(),
+                }, file_range)
+                    .ok()
+                    .flatten()
+                    .and_then(|hover_result| {
+                        // Extract documentation from hover info
+                        let markup = hover_result.info.markup.as_str();
+
+                        // Try to extract just the documentation part
+                        // Hover markup typically has: code block, separator (---), then docs
+                        let mut in_code_block = false;
+                        let mut doc_lines = Vec::new();
+
+                        for line in markup.lines() {
+                            if line.starts_with("```") {
+                                in_code_block = !in_code_block;
+                                continue;
+                            }
+
+                            if in_code_block {
+                                continue;
+                            }
+
+                            if line.starts_with("---") {
+                                continue;
+                            }
+
+                            if !line.is_empty() || !doc_lines.is_empty() {
+                                doc_lines.push(line);
+                            }
+                        }
+
+                        let docs = doc_lines.join("\n").trim().to_string();
+                        if !docs.is_empty() {
+                            Some(docs)
+                        } else {
+                            None
+                        }
+                    });
 
                 SymbolInfo {
                     name: nav.name.to_string(),

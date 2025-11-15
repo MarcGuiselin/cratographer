@@ -141,8 +141,9 @@ impl ServerHandler for CratographerServer {
                 website_url: None,
             },
             instructions: Some(
-                "Cratographer: An MCP tool for indexing and analyzing Rust code. \
-                Use find_symbol to locate symbol definitions and enumerate_file to list all symbols in a file."
+                "Cratographer: An MCP tool to help coding agents search symbols within Rust projects. \
+                Use find_symbol to locate symbol definitions within the project and enumerate_file \
+                to list all symbols in a file."
                     .to_string(),
             ),
         }
