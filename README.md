@@ -6,6 +6,12 @@ An MCP (Model Context Protocol) tool for indexing and analyzing Rust code to wor
 
 Cratographer solves a critical problem when AI agents work with complex Rust codebases: **quickly locating code elements without expensive searches**. When a user says "let's modify DurableFlags", the AI agent can instantly find the exact location of the struct definition instead of running multiple grep commands or bash scripts to hunt it down.
 
+### AI-First Development
+
+Cratographer is built using **AI-first development practices**, where AI agents like Claude Code and Amazon Q generate the code. The human developer reviews the AI-generated code and remains ultimately responsible for code quality, architecture decisions, and correctness.
+
+Notably, Cratographer uses itself as one of its own MCP tools during development—the AI agents building Cratographer leverage Cratographer's symbol search capabilities to navigate and modify its own codebase. This "dogfooding" approach ensures the tool is practical and useful for real-world AI-assisted development workflows.
+
 ## Goals
 
 ### Primary Goals
@@ -164,4 +170,4 @@ Once configured, the AI agent will have access to the `find_symbol` and `enumera
 
 ## License
 
-TBD
+MIT
