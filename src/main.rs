@@ -61,7 +61,7 @@ impl CratographerServer {
         let warmup_options = SearchOptions {
             mode: SearchMode::Exact,
             include_library: true,
-            types_only: false,
+            types_only: true,
         };
         if let Err(e) = analyzer.find_symbol("HashMap", &warmup_options) {
             eprintln!("Warning: Warm-up query failed: {}", e);
