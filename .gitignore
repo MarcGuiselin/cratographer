@@ -27,6 +27,3 @@ target
 
 # Claude Code configuration
 .claude
-
-# Cargo.lock (not needed for libraries)
-Cargo.lock
