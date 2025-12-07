@@ -367,7 +367,8 @@ impl Analyzer {
         let analysis = self.host.analysis();
         let mut errors = Vec::new();
         
-        // Create diagnostics config
+        // Create diagnostics config - using test_sample() as it provides a reasonable default configuration
+        // with diagnostics enabled and standard settings
         let config = DiagnosticsConfig::test_sample();
         
         // Iterate through all files in the VFS
@@ -390,7 +391,7 @@ impl Analyzer {
             // Get full diagnostics for this file (syntax + semantic)
             let diagnostics = analysis
                 .full_diagnostics(&config, AssistResolveStrategy::None, file_id)
-                .map_err(|_| AnalyzerError::Canceled)?;
+                .map_err(|e| AnalyzerError::Other(format!("Failed to get diagnostics for file {}: {:?}", file_path, e)))?;
             
             // Get file text to compute line/column numbers
             let text = match analysis.file_text(file_id) {
