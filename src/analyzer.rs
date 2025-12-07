@@ -636,3 +636,24 @@ mod tests {
         assert!(has_impl, "Should find at least one Impl block in analyzer.rs");
     }
 }
+
+#[cfg(test)]
+mod diagnostic_test {
+    use super::*;
+
+    #[test]
+    fn test_explore_diagnostics_api() {
+        let mut analyzer = Analyzer::new();
+        let result = analyzer.load_project(".");
+        assert!(result.is_ok());
+        
+        let analysis = analyzer.host.analysis();
+        
+        // Try to see what's available
+        // Let's iterate through files in VFS
+        for (file_id, _path) in analyzer.vfs.iter() {
+            // Try diagnostics method with different signatures
+            println!("Checking file: {:?}", file_id);
+        }
+    }
+}
