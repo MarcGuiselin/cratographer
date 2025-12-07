@@ -247,9 +247,9 @@ impl ServerHandler for CratographerServer {
                 website_url: None,
             },
             instructions: Some(
-                "Cratographer: An MCP tool to help coding agents search symbols within Rust projects. \
-                Use find_symbol to locate symbol definitions within the project and enumerate_file \
-                to list all symbols in a file."
+                "Cratographer: An MCP tool to help coding agents work with Rust projects. \
+                Use find_symbol to locate symbol definitions, enumerate_file to list all symbols in a file, \
+                and get_workspace_errors to retrieve all compilation errors from the workspace."
                     .to_string(),
             ),
         }
@@ -409,6 +409,10 @@ mod tests {
         assert!(
             instructions.contains("enumerate_file"),
             "Instructions should mention enumerate_file"
+        );
+        assert!(
+            instructions.contains("get_workspace_errors"),
+            "Instructions should mention get_workspace_errors"
         );
     }
 

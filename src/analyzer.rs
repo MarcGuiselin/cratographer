@@ -377,9 +377,8 @@ impl Analyzer {
                 .map(|p| p.to_string())
                 .unwrap_or_else(|| format!("{:?}", file_id));
             
-            // Only process files in the workspace (not library files)
-            // Skip files that are not in the current workspace
-            if !file_path.contains("/home/runner/work/") && !file_path.starts_with("/") {
+            // Only process Rust source files (.rs extension)
+            if !file_path.ends_with(".rs") {
                 continue;
             }
             
