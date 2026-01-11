@@ -5,7 +5,6 @@
 //! features needed by Cratographer.
 
 use ra_ap_ide::{AnalysisHost, SymbolKind as RaSymbolKind};
-use ra_ap_load_cargo::{load_workspace_at, LoadCargoConfig, ProcMacroServerChoice};
 use ra_ap_paths::{AbsPathBuf, Utf8PathBuf};
 use ra_ap_project_model::CargoConfig;
 use std::path::PathBuf;
@@ -89,6 +88,8 @@ impl From<std::io::Error> for AnalyzerError {
 pub struct Analyzer {
     host: AnalysisHost,
     vfs: ra_ap_vfs::Vfs,
+    loader: Option<ra_ap_vfs_notify::NotifyHandle>,
+    receiver: Option<crossbeam_channel::Receiver<ra_ap_vfs::loader::Message>>,
 }
 
 impl Analyzer {
@@ -97,6 +98,8 @@ impl Analyzer {
         Self {
             host: AnalysisHost::new(None), // No LRU capacity limit
             vfs: ra_ap_vfs::Vfs::default(),
+            loader: None,
+            receiver: None,
         }
     }
 
@@ -106,7 +109,14 @@ impl Analyzer {
     /// 1. Find the Cargo.toml manifest
     /// 2. Load the project workspace
     /// 3. Set up the analysis database with VFS and CrateGraph
+    /// 4. Enable file watching for incremental updates
     pub fn load_project(&mut self, project_path: impl Into<PathBuf>) -> Result<(), AnalyzerError> {
+        use crossbeam_channel::unbounded;
+        use ra_ap_ide_db::{ChangeWithProcMacros, RootDatabase};
+        use ra_ap_load_cargo::ProjectFolders;
+        use ra_ap_project_model::{ProjectManifest, ProjectWorkspace};
+        use ra_ap_vfs::loader::{Handle, LoadingProgress};
+
         let project_path: PathBuf = project_path.into();
         let canonical_path = project_path
             .canonicalize()
@@ -118,28 +128,94 @@ impl Analyzer {
 
         let abs_path = AbsPathBuf::assert(utf8_path);
 
-        // Use load_workspace_at helper to load the project
+        // Create file watcher
+        let (sender, receiver) = unbounded();
+        let mut loader = ra_ap_vfs_notify::NotifyHandle::spawn(sender);
+
+        // Build cargo config
         let mut cargo_config = CargoConfig::default();
         cargo_config.all_targets = true;
 
-        let load_config = LoadCargoConfig {
-            load_out_dirs_from_check: true,
-            with_proc_macro_server: ProcMacroServerChoice::None,
-            prefill_caches: false,
-        };
+        // Discover and load the workspace
+        let progress = |_msg: String| {};
+        let manifest = ProjectManifest::discover_single(&abs_path)
+            .map_err(|e| AnalyzerError::ProjectLoadError(format!("{:?}", e)))?;
+        let mut workspace = ProjectWorkspace::load(manifest, &cargo_config, &progress)
+            .map_err(|e| AnalyzerError::ProjectLoadError(format!("{:?}", e)))?;
 
-        let progress = |_msg: String| {}; // No-op progress callback
+        // Load build scripts if needed
+        let build_scripts = workspace.run_build_scripts(&cargo_config, &progress)
+            .map_err(|e| AnalyzerError::ProjectLoadError(format!("{:?}", e)))?;
+        workspace.set_build_scripts(build_scripts);
 
-        let (db, vfs, _) = load_workspace_at(
-            abs_path.as_ref(),
-            &cargo_config,
-            &load_config,
-            &progress,
-        ).map_err(|e| AnalyzerError::ProjectLoadError(format!("{:?}", e)))?;
+        // Create database
+        let lru_cap = std::env::var("RA_LRU_CAP").ok().and_then(|it| it.parse::<u16>().ok());
+        let mut db = RootDatabase::new(lru_cap);
+
+        // Build crate graph and load files into VFS
+        let (crate_graph, _proc_macros) = workspace.to_crate_graph(
+            &mut |path: &ra_ap_paths::AbsPath| {
+                let contents = loader.load_sync(path);
+                let vfs_path = ra_ap_vfs::VfsPath::from(path.to_path_buf());
+                self.vfs.set_file_contents(vfs_path.clone(), contents);
+                self.vfs.file_id(&vfs_path).and_then(|(file_id, excluded)| {
+                    (excluded == ra_ap_vfs::FileExcluded::No).then_some(file_id)
+                })
+            },
+            &Default::default(),
+        );
+
+        // Build project folders with watch indices
+        let project_folders = ProjectFolders::new(std::slice::from_ref(&workspace), &[], None);
+
+        // Configure loader with watching enabled
+        loader.set_config(ra_ap_vfs::loader::Config {
+            load: project_folders.load,
+            watch: project_folders.watch,  // Enable watching (not empty like load_workspace_at)
+            version: 0,
+        });
+
+        // Process initial load messages
+        let mut analysis_change = ChangeWithProcMacros::default();
+        db.enable_proc_attr_macros();
+
+        for task in &receiver {
+            match task {
+                ra_ap_vfs::loader::Message::Progress { n_done, .. } => {
+                    if n_done == LoadingProgress::Finished {
+                        break;
+                    }
+                }
+                ra_ap_vfs::loader::Message::Loaded { files } | ra_ap_vfs::loader::Message::Changed { files } => {
+                    for (path, contents) in files {
+                        self.vfs.set_file_contents(path.into(), contents);
+                    }
+                }
+            }
+        }
+
+        // Apply initial changes to database
+        let changes = self.vfs.take_changes();
+        for (_, file) in changes {
+            if let ra_ap_vfs::Change::Create(v, _) | ra_ap_vfs::Change::Modify(v, _) = file.change {
+                if let Ok(text) = String::from_utf8(v) {
+                    analysis_change.change_file(file.file_id, Some(text));
+                }
+            }
+        }
+
+        let source_roots = project_folders.source_root_config.partition(&self.vfs);
+        analysis_change.set_roots(source_roots);
+        analysis_change.set_crate_graph(crate_graph);
+
+        db.apply_change(analysis_change);
 
         // Create AnalysisHost from the loaded database
         self.host = AnalysisHost::with_database(db);
-        self.vfs = vfs;
+
+        // Store loader and receiver for future file watching
+        self.loader = Some(loader);
+        self.receiver = Some(receiver);
 
         Ok(())
     }
@@ -292,6 +368,56 @@ impl Analyzer {
             .collect();
 
         Ok(results)
+    }
+
+    /// Apply incremental file changes to the analysis host
+    ///
+    /// This is called by the background watcher task when files change on disk.
+    /// It updates the VFS and applies the changes incrementally to the index.
+    pub fn apply_file_changes(
+        &mut self,
+        files: Vec<(ra_ap_paths::AbsPathBuf, Option<Vec<u8>>)>
+    ) -> Result<(), AnalyzerError> {
+        use ra_ap_ide_db::ChangeWithProcMacros;
+
+        // Update VFS with new file contents
+        for (path, contents) in files {
+            let vfs_path = ra_ap_vfs::VfsPath::from(path);
+            self.vfs.set_file_contents(vfs_path, contents);
+        }
+
+        // Take accumulated changes from VFS
+        let changes = self.vfs.take_changes();
+        if changes.is_empty() {
+            return Ok(());
+        }
+
+        // Build ChangeWithProcMacros from VFS changes
+        let mut analysis_change = ChangeWithProcMacros::default();
+        for (_, file) in changes {
+            match file.change {
+                ra_ap_vfs::Change::Create(v, _) | ra_ap_vfs::Change::Modify(v, _) => {
+                    if let Ok(text) = String::from_utf8(v) {
+                        analysis_change.change_file(file.file_id, Some(text));
+                    }
+                }
+                ra_ap_vfs::Change::Delete => {
+                    analysis_change.change_file(file.file_id, None);
+                }
+            }
+        }
+
+        // Apply changes to analysis host
+        self.host.apply_change(analysis_change);
+
+        Ok(())
+    }
+
+    /// Take the receiver channel (called once during initialization)
+    ///
+    /// This extracts the receiver so it can be used by the background watcher task.
+    pub fn take_receiver(&mut self) -> Option<crossbeam_channel::Receiver<ra_ap_vfs::loader::Message>> {
+        self.receiver.take()
     }
 }
 

@@ -38,6 +38,49 @@ struct EnumerateFileParams {
     file_path: String,
 }
 
+/// Spawn background task to watch for file changes and update the index
+fn spawn_file_watcher(
+    analyzer: Arc<Mutex<Analyzer>>,
+    receiver: crossbeam_channel::Receiver<ra_ap_vfs::loader::Message>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    // Check if we're in a tokio runtime context
+    let _handle = tokio::runtime::Handle::try_current()
+        .map_err(|_| "No tokio runtime available")?;
+
+    tokio::spawn(async move {
+        use ra_ap_vfs::loader::Message;
+
+        loop {
+            // Block on channel receive (runs in tokio threadpool)
+            let msg = match receiver.recv() {
+                Ok(msg) => msg,
+                Err(_) => {
+                    eprintln!("File watcher channel closed");
+                    break;
+                }
+            };
+
+            match msg {
+                Message::Changed { files } => {
+                    // Apply incremental changes
+                    let mut analyzer = analyzer.lock().unwrap();
+                    if let Err(e) = analyzer.apply_file_changes(files) {
+                        eprintln!("Error applying file changes: {}", e);
+                    }
+                }
+                Message::Progress { .. } => {
+                    // Ignore progress messages during incremental updates
+                }
+                Message::Loaded { .. } => {
+                    // Initial load messages, ignore (already processed during init)
+                }
+            }
+        }
+    });
+
+    Ok(())
+}
+
 /// Cratographer MCP Server
 /// Provides tools for indexing and querying Rust code symbols
 #[derive(Clone)]
@@ -67,9 +110,26 @@ impl CratographerServer {
             eprintln!("Warning: Warm-up query failed: {}", e);
         }
 
+        let analyzer = Arc::new(Mutex::new(analyzer));
+
+        // Extract receiver and spawn file watcher task
+        let receiver = {
+            let mut analyzer_guard = analyzer.lock().unwrap();
+            analyzer_guard.take_receiver()
+        };
+
+        if let Some(receiver) = receiver {
+            match spawn_file_watcher(analyzer.clone(), receiver) {
+                Ok(_) => eprintln!("File watcher initialized"),
+                Err(e) => eprintln!("Warning: Could not start file watcher: {}", e),
+            }
+        } else {
+            eprintln!("Warning: File watcher not available");
+        }
+
         Ok(Self {
             tool_router: Self::tool_router(),
-            analyzer: Arc::new(Mutex::new(analyzer)),
+            analyzer,
         })
     }
 
