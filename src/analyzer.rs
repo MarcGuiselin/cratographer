@@ -362,7 +362,8 @@ impl Analyzer {
     /// Get all errors from the workspace
     ///
     /// This method retrieves all diagnostic errors (not warnings) from all files in the workspace.
-    /// It returns only diagnostics with Error severity.
+    /// It returns only diagnostics with Error severity, filtered to exclude common false positives
+    /// like unresolved macro errors, and capped at 25 errors.
     pub fn get_workspace_errors(&self) -> Result<Vec<DiagnosticInfo>, AnalyzerError> {
         let analysis = self.host.analysis();
         let mut errors = Vec::new();
@@ -373,6 +374,11 @@ impl Analyzer {
         
         // Iterate through all files in the VFS
         for (file_id, vfs_path) in self.vfs.iter() {
+            // Stop if we've already collected 25 errors
+            if errors.len() >= 25 {
+                break;
+            }
+            
             // Get the file path
             let file_path = vfs_path.as_path()
                 .map(|p| p.to_string())
@@ -402,14 +408,15 @@ impl Analyzer {
             
             // Filter to only errors (not warnings, hints, etc.)
             for diag in diagnostics {
+                // Stop if we've already collected 25 errors
+                if errors.len() >= 25 {
+                    break;
+                }
+                
                 // Only include Error severity diagnostics
                 if diag.severity != Severity::Error {
                     continue;
                 }
-                
-                let range = diag.range.range;
-                let start = line_index.line_col(range.start());
-                let end = line_index.line_col(range.end());
                 
                 // Format the diagnostic code as a string
                 let code_str = match diag.code {
@@ -419,6 +426,18 @@ impl Analyzer {
                     ra_ap_ide::DiagnosticCode::Ra(code, _) => Some(format!("ra::{}", code)),
                     ra_ap_ide::DiagnosticCode::SyntaxError => Some("syntax_error".to_string()),
                 };
+                
+                // Skip unresolved macro errors as they are often false positives
+                // These commonly occur when proc macros (like derive macros) aren't fully loaded
+                if let Some(ref code) = code_str {
+                    if code.contains("unresolved-macro-call") {
+                        continue;
+                    }
+                }
+                
+                let range = diag.range.range;
+                let start = line_index.line_col(range.start());
+                let end = line_index.line_col(range.end());
                 
                 errors.push(DiagnosticInfo {
                     message: diag.message.clone(),
