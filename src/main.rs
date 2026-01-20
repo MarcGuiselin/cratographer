@@ -38,10 +38,12 @@ struct EnumerateFileParams {
     file_path: String,
 }
 
-/// Parameters for the get_workspace_errors tool
+/// Parameters for the get_workspace_issues tool
 #[derive(Serialize, Deserialize, JsonSchema)]
-struct GetWorkspaceErrorsParams {
-    // No parameters needed - retrieves errors from all crates in workspace
+struct GetWorkspaceIssuesParams {
+    /// Optional glob pattern to filter files (e.g., "src/**/*.rs")
+    #[serde(default)]
+    file_glob: Option<String>,
 }
 
 /// Cratographer MCP Server
@@ -193,37 +195,42 @@ impl CratographerServer {
         ]))
     }
 
-    /// Get all errors from all crates in the current workspace
-    #[tool(description = "Retrieve all compilation errors (and only errors, not warnings) from all crates in the current local workspace directory")]
-    async fn get_workspace_errors(&self, params: Parameters<GetWorkspaceErrorsParams>) -> Result<CallToolResult, McpError> {
-        let _params = params.0;
+    /// Get all errors and warnings from all crates in the current workspace
+    #[tool(description = "Retrieve compilation errors and warnings from all crates in the current local workspace directory. Returns up to 25 issues (errors listed first, then warnings). Optionally filter by file glob pattern.")]
+    async fn get_workspace_issues(&self, params: Parameters<GetWorkspaceIssuesParams>) -> Result<CallToolResult, McpError> {
+        let params = params.0;
 
-        // Get workspace errors
+        // Get workspace issues
         let analyzer = self.analyzer.lock().unwrap();
-        let errors = analyzer.get_workspace_errors()
+        let issues = analyzer.get_workspace_issues(params.file_glob.as_deref())
             .map_err(|e| McpError {
                 code: ErrorCode(-1),
-                message: format!("Failed to get workspace errors: {}", e).into(),
+                message: format!("Failed to get workspace issues: {}", e).into(),
                 data: None,
             })?;
 
+        // Count errors and warnings
+        let error_count = issues.iter().filter(|i| i.severity == "Error").count();
+        let warning_count = issues.len() - error_count;
+
         // Format results as JSON
-        let results_json: Vec<_> = errors.iter().map(|err| {
+        let results_json: Vec<_> = issues.iter().map(|issue| {
             json!({
-                "message": err.message,
-                "severity": err.severity,
-                "file_path": err.file_path,
-                "start_line": err.start_line,
-                "start_column": err.start_column,
-                "end_line": err.end_line,
-                "end_column": err.end_column,
-                "code": err.code,
+                "message": issue.message,
+                "severity": issue.severity,
+                "file_path": issue.file_path,
+                "start_line": issue.start_line,
+                "start_column": issue.start_column,
+                "end_line": issue.end_line,
+                "end_column": issue.end_column,
+                "code": issue.code,
             })
         }).collect();
 
         let summary = format!(
-            "Found {} error(s) in the workspace",
-            errors.len()
+            "Found {} error(s) and {} warning(s) in the workspace",
+            error_count,
+            warning_count
         );
 
         Ok(CallToolResult::success(vec![
@@ -249,7 +256,7 @@ impl ServerHandler for CratographerServer {
             instructions: Some(
                 "Cratographer: An MCP tool to help coding agents work with Rust projects. \
                 Use find_symbol to locate symbol definitions, enumerate_file to list all symbols in a file, \
-                and get_workspace_errors to retrieve all compilation errors from the workspace."
+                and get_workspace_issues to retrieve compilation errors and warnings from the workspace."
                     .to_string(),
             ),
         }
@@ -411,8 +418,8 @@ mod tests {
             "Instructions should mention enumerate_file"
         );
         assert!(
-            instructions.contains("get_workspace_errors"),
-            "Instructions should mention get_workspace_errors"
+            instructions.contains("get_workspace_issues"),
+            "Instructions should mention get_workspace_issues"
         );
     }
 
@@ -424,15 +431,15 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_get_workspace_errors_returns_ok() {
+    async fn test_get_workspace_issues_returns_ok() {
         let server = CratographerServer::new().expect("Failed to create server");
 
-        // Create parameters for get_workspace_errors
-        let params = Parameters(GetWorkspaceErrorsParams {});
+        // Create parameters for get_workspace_issues
+        let params = Parameters(GetWorkspaceIssuesParams { file_glob: None });
 
-        let result = server.get_workspace_errors(params).await;
+        let result = server.get_workspace_issues(params).await;
 
-        assert!(result.is_ok(), "get_workspace_errors should return Ok: {:?}", result.err());
+        assert!(result.is_ok(), "get_workspace_issues should return Ok: {:?}", result.err());
         let tool_result = result.unwrap();
 
         // Check that we got content back
