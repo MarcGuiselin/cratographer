@@ -4,7 +4,7 @@
 //! of Rust code. It handles project loading, symbol lookups, and other code intelligence
 //! features needed by Cratographer.
 
-use ra_ap_ide::{AnalysisHost, SymbolKind as RaSymbolKind};
+use ra_ap_ide::{AnalysisHost, AssistResolveStrategy, DiagnosticsConfig, Severity, SymbolKind as RaSymbolKind};
 use ra_ap_load_cargo::{load_workspace_at, LoadCargoConfig, ProcMacroServerChoice};
 use ra_ap_paths::{AbsPathBuf, Utf8PathBuf};
 use ra_ap_project_model::CargoConfig;
@@ -345,6 +345,98 @@ pub enum SymbolKind {
     TypeAlias,
 }
 
+/// Information about a diagnostic/error in the codebase
+#[derive(Debug, Clone)]
+pub struct DiagnosticInfo {
+    pub message: String,
+    pub severity: String,
+    pub file_path: String,
+    pub start_line: u32,
+    pub start_column: u32,
+    pub end_line: u32,
+    pub end_column: u32,
+    pub code: Option<String>,
+}
+
+impl Analyzer {
+    /// Get all errors from the workspace
+    ///
+    /// This method retrieves all diagnostic errors (not warnings) from all files in the workspace.
+    /// It returns only diagnostics with Error severity.
+    pub fn get_workspace_errors(&self) -> Result<Vec<DiagnosticInfo>, AnalyzerError> {
+        let analysis = self.host.analysis();
+        let mut errors = Vec::new();
+        
+        // Create diagnostics config - using test_sample() as it provides a reasonable default configuration
+        // with diagnostics enabled and standard settings
+        let config = DiagnosticsConfig::test_sample();
+        
+        // Iterate through all files in the VFS
+        for (file_id, vfs_path) in self.vfs.iter() {
+            // Get the file path
+            let file_path = vfs_path.as_path()
+                .map(|p| p.to_string())
+                .unwrap_or_else(|| format!("{:?}", file_id));
+            
+            // Only process Rust source files (.rs extension)
+            if !file_path.ends_with(".rs") {
+                continue;
+            }
+            
+            // Skip library paths
+            if file_path.contains("/.cargo/") || file_path.contains("/rustc/") {
+                continue;
+            }
+            
+            // Get full diagnostics for this file (syntax + semantic)
+            let diagnostics = analysis
+                .full_diagnostics(&config, AssistResolveStrategy::None, file_id)
+                .map_err(|e| AnalyzerError::Other(format!("Failed to get diagnostics for file {}: {:?}", file_path, e)))?;
+            
+            // Get file text to compute line/column numbers
+            let text = match analysis.file_text(file_id) {
+                Ok(text) => text,
+                Err(_) => continue, // Skip files we can't read
+            };
+            let line_index = ra_ap_ide::LineIndex::new(&text);
+            
+            // Filter to only errors (not warnings, hints, etc.)
+            for diag in diagnostics {
+                // Only include Error severity diagnostics
+                if diag.severity != Severity::Error {
+                    continue;
+                }
+                
+                let range = diag.range.range;
+                let start = line_index.line_col(range.start());
+                let end = line_index.line_col(range.end());
+                
+                // Format the diagnostic code as a string
+                let code_str = match diag.code {
+                    ra_ap_ide::DiagnosticCode::RustcHardError(code) => Some(code.to_string()),
+                    ra_ap_ide::DiagnosticCode::RustcLint(code) => Some(code.to_string()),
+                    ra_ap_ide::DiagnosticCode::Clippy(code) => Some(format!("clippy::{}", code)),
+                    ra_ap_ide::DiagnosticCode::Ra(code, _) => Some(format!("ra::{}", code)),
+                    ra_ap_ide::DiagnosticCode::SyntaxError => Some("syntax_error".to_string()),
+                };
+                
+                errors.push(DiagnosticInfo {
+                    message: diag.message.clone(),
+                    severity: format!("{:?}", diag.severity),
+                    file_path: file_path.clone(),
+                    start_line: start.line,
+                    start_column: start.col,
+                    end_line: end.line,
+                    end_column: end.col,
+                    code: code_str,
+                });
+            }
+        }
+        
+        Ok(errors)
+    }
+}
+
 
 #[cfg(test)]
 mod tests {
@@ -634,5 +726,32 @@ mod tests {
         // Verify we found impl blocks
         let has_impl = symbols.iter().any(|s| s.kind == SymbolKind::Impl);
         assert!(has_impl, "Should find at least one Impl block in analyzer.rs");
+    }
+}
+
+#[cfg(test)]
+mod diagnostic_test {
+    use super::*;
+
+    #[test]
+    fn test_get_workspace_errors() {
+        let mut analyzer = Analyzer::new();
+        let result = analyzer.load_project(".");
+        assert!(result.is_ok(), "Failed to load project: {:?}", result.err());
+        
+        // Get workspace errors
+        let errors = analyzer.get_workspace_errors();
+        assert!(errors.is_ok(), "Failed to get workspace errors: {:?}", errors.err());
+        
+        let errors = errors.unwrap();
+        println!("Found {} error(s) in the workspace", errors.len());
+        
+        // Print first few errors for inspection
+        for (i, err) in errors.iter().take(5).enumerate() {
+            println!("Error {}: {} at {}:{}:{}", i+1, err.message, err.file_path, err.start_line, err.start_column);
+        }
+        
+        // The test passes as long as we can retrieve errors without crashing
+        // We don't assert on the number of errors because the codebase might not have any errors
     }
 }

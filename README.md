@@ -63,7 +63,7 @@ The current implementation loads the project once at startup. Future versions wi
 
 ## Current Implementation
 
-Cratographer is implemented as an MCP server using the official Rust SDK (`rmcp`) with rust-analyzer integration for semantic code analysis. The server provides two fully functional tools:
+Cratographer is implemented as an MCP server using the official Rust SDK (`rmcp`) with rust-analyzer integration for semantic code analysis. The server provides three fully functional tools:
 
 ### Tools
 
@@ -99,6 +99,20 @@ List all symbols defined in a specific file.
 {
   "file_path": "/path/to/file.rs"
 }
+```
+
+#### get_workspace_errors
+Retrieve all compilation errors from all crates in the current local workspace directory.
+
+**Features:**
+- Returns only Error-severity diagnostics (not warnings or hints)
+- Includes both syntax and semantic errors
+- Provides error message, file path, line/column positions, and error code
+- Filters to only Rust source files (.rs) in the workspace
+
+**Example usage:**
+```json
+{}
 ```
 
 ### Implementation Details

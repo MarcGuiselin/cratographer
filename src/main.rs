@@ -38,6 +38,12 @@ struct EnumerateFileParams {
     file_path: String,
 }
 
+/// Parameters for the get_workspace_errors tool
+#[derive(Serialize, Deserialize, JsonSchema)]
+struct GetWorkspaceErrorsParams {
+    // No parameters needed - retrieves errors from all crates in workspace
+}
+
 /// Cratographer MCP Server
 /// Provides tools for indexing and querying Rust code symbols
 #[derive(Clone)]
@@ -186,6 +192,45 @@ impl CratographerServer {
             Content::text(serde_json::to_string_pretty(&results_json).unwrap()),
         ]))
     }
+
+    /// Get all errors from all crates in the current workspace
+    #[tool(description = "Retrieve all compilation errors (and only errors, not warnings) from all crates in the current local workspace directory")]
+    async fn get_workspace_errors(&self, params: Parameters<GetWorkspaceErrorsParams>) -> Result<CallToolResult, McpError> {
+        let _params = params.0;
+
+        // Get workspace errors
+        let analyzer = self.analyzer.lock().unwrap();
+        let errors = analyzer.get_workspace_errors()
+            .map_err(|e| McpError {
+                code: ErrorCode(-1),
+                message: format!("Failed to get workspace errors: {}", e).into(),
+                data: None,
+            })?;
+
+        // Format results as JSON
+        let results_json: Vec<_> = errors.iter().map(|err| {
+            json!({
+                "message": err.message,
+                "severity": err.severity,
+                "file_path": err.file_path,
+                "start_line": err.start_line,
+                "start_column": err.start_column,
+                "end_line": err.end_line,
+                "end_column": err.end_column,
+                "code": err.code,
+            })
+        }).collect();
+
+        let summary = format!(
+            "Found {} error(s) in the workspace",
+            errors.len()
+        );
+
+        Ok(CallToolResult::success(vec![
+            Content::text(summary),
+            Content::text(serde_json::to_string_pretty(&results_json).unwrap()),
+        ]))
+    }
 }
 
 #[tool_handler]
@@ -202,9 +247,9 @@ impl ServerHandler for CratographerServer {
                 website_url: None,
             },
             instructions: Some(
-                "Cratographer: An MCP tool to help coding agents search symbols within Rust projects. \
-                Use find_symbol to locate symbol definitions within the project and enumerate_file \
-                to list all symbols in a file."
+                "Cratographer: An MCP tool to help coding agents work with Rust projects. \
+                Use find_symbol to locate symbol definitions, enumerate_file to list all symbols in a file, \
+                and get_workspace_errors to retrieve all compilation errors from the workspace."
                     .to_string(),
             ),
         }
@@ -365,6 +410,10 @@ mod tests {
             instructions.contains("enumerate_file"),
             "Instructions should mention enumerate_file"
         );
+        assert!(
+            instructions.contains("get_workspace_errors"),
+            "Instructions should mention get_workspace_errors"
+        );
     }
 
     #[test]
@@ -372,5 +421,27 @@ mod tests {
         let _server = CratographerServer::new().expect("Failed to create server");
         // Just verify we can create the server without panicking
         // If we get here, the server was created successfully
+    }
+
+    #[tokio::test]
+    async fn test_get_workspace_errors_returns_ok() {
+        let server = CratographerServer::new().expect("Failed to create server");
+
+        // Create parameters for get_workspace_errors
+        let params = Parameters(GetWorkspaceErrorsParams {});
+
+        let result = server.get_workspace_errors(params).await;
+
+        assert!(result.is_ok(), "get_workspace_errors should return Ok: {:?}", result.err());
+        let tool_result = result.unwrap();
+
+        // Check that we got content back
+        assert!(!tool_result.content.is_empty(), "Result should contain content");
+
+        // Verify it's a success result (not an error)
+        assert!(!tool_result.is_error.unwrap_or(false), "Result should not be an error");
+
+        // Print the result for debugging
+        println!("Result: {:?}", tool_result.content);
     }
 }
