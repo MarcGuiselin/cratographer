@@ -10,6 +10,9 @@ use ra_ap_paths::{AbsPathBuf, Utf8PathBuf};
 use ra_ap_project_model::CargoConfig;
 use std::path::PathBuf;
 
+/// Maximum number of errors to return from get_workspace_errors
+const MAX_WORKSPACE_ERRORS: usize = 25;
+
 /// Search mode for symbol lookup
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum SearchMode {
@@ -124,7 +127,7 @@ impl Analyzer {
 
         let load_config = LoadCargoConfig {
             load_out_dirs_from_check: true,
-            with_proc_macro_server: ProcMacroServerChoice::None,
+            with_proc_macro_server: ProcMacroServerChoice::Sysroot,
             prefill_caches: false,
         };
 
@@ -362,8 +365,9 @@ impl Analyzer {
     /// Get all errors from the workspace
     ///
     /// This method retrieves all diagnostic errors (not warnings) from all files in the workspace.
-    /// It returns only diagnostics with Error severity, filtered to exclude common false positives
-    /// like unresolved macro errors, and capped at 25 errors.
+    /// It returns only diagnostics with Error severity, capped at MAX_WORKSPACE_ERRORS (25) errors.
+    /// Proc-macro expansion is enabled to ensure derive macros and other procedural macros are
+    /// properly analyzed, reducing false positive errors.
     pub fn get_workspace_errors(&self) -> Result<Vec<DiagnosticInfo>, AnalyzerError> {
         let analysis = self.host.analysis();
         let mut errors = Vec::new();
@@ -374,8 +378,8 @@ impl Analyzer {
         
         // Iterate through all files in the VFS
         for (file_id, vfs_path) in self.vfs.iter() {
-            // Stop if we've already collected 25 errors
-            if errors.len() >= 25 {
+            // Stop if we've already collected MAX_WORKSPACE_ERRORS errors
+            if errors.len() >= MAX_WORKSPACE_ERRORS {
                 break;
             }
             
@@ -408,8 +412,8 @@ impl Analyzer {
             
             // Filter to only errors (not warnings, hints, etc.)
             for diag in diagnostics {
-                // Stop if we've already collected 25 errors
-                if errors.len() >= 25 {
+                // Stop if we've already collected MAX_WORKSPACE_ERRORS errors
+                if errors.len() >= MAX_WORKSPACE_ERRORS {
                     break;
                 }
                 
@@ -426,14 +430,6 @@ impl Analyzer {
                     ra_ap_ide::DiagnosticCode::Ra(code, _) => Some(format!("ra::{}", code)),
                     ra_ap_ide::DiagnosticCode::SyntaxError => Some("syntax_error".to_string()),
                 };
-                
-                // Skip unresolved macro errors as they are often false positives
-                // These commonly occur when proc macros (like derive macros) aren't fully loaded
-                if let Some(ref code) = code_str {
-                    if code.contains("unresolved-macro-call") {
-                        continue;
-                    }
-                }
                 
                 let range = diag.range.range;
                 let start = line_index.line_col(range.start());
