@@ -436,9 +436,11 @@ impl Analyzer {
                     break;
                 }
                 
-                // Only include Error and Warning severity diagnostics
+                // Separate errors and warnings based on severity
                 let is_error = diag.severity == Severity::Error;
-                let is_warning = matches!(diag.severity, Severity::WeakWarning);
+                // For warnings, we want to be inclusive - currently we know WeakWarning exists
+                // This will capture any warning-type severities
+                let is_warning = matches!(diag.severity, Severity::Warning | Severity::WeakWarning);
                 
                 if !is_error && !is_warning {
                     continue;
@@ -820,7 +822,7 @@ mod diagnostic_test {
         
         let issues = issues.unwrap();
         let errors: Vec<_> = issues.iter().filter(|i| i.severity == "Error").collect();
-        let warnings: Vec<_> = issues.iter().filter(|i| i.severity == "WeakWarning").collect();
+        let warnings: Vec<_> = issues.iter().filter(|i| i.severity == "Warning" || i.severity == "WeakWarning").collect();
         
         println!("Found {} error(s) and {} warning(s) in error_test crate", errors.len(), warnings.len());
         
