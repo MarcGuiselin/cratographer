@@ -14,6 +14,15 @@ use std::path::PathBuf;
 const MAX_WORKSPACE_ISSUES: usize = 25;
 
 /// Detect the proc-macro server to use, with fallback for NixOS/direnv compatibility
+///
+/// This function attempts to find the rust-analyzer proc-macro server in the following order:
+/// 1. In PATH (works with NixOS/direnv where binaries are symlinked)
+/// 2. In rustup toolchains (standard installation)
+/// 3. Falls back to Sysroot detection (may not work on NixOS/direnv)
+///
+/// Note: Even with a properly detected proc-macro server, macro expansion may not work
+/// in all cases due to limitations in how rust-analyzer handles embedded usage.
+/// The `get_workspace_issues` test is designed to handle both cases gracefully.
 fn detect_proc_macro_server() -> ProcMacroServerChoice {
     // First, try to find rust-analyzer-proc-macro-srv in PATH
     // This works better with NixOS/direnv where the sysroot might not have the server
@@ -435,9 +444,10 @@ impl Analyzer {
             None
         };
         
-        // Create diagnostics config - using test_sample() as it provides a reasonable default configuration
-        // with diagnostics enabled and standard settings
-        let config = DiagnosticsConfig::test_sample();
+        // Create diagnostics config - explicitly enable proc-macro expansion
+        let mut config = DiagnosticsConfig::test_sample();
+        config.proc_macros_enabled = true;
+        config.proc_attr_macros_enabled = true;
         
         // Iterate through all files in the VFS
         for (file_id, vfs_path) in self.vfs.iter() {
