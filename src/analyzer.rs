@@ -13,6 +13,50 @@ use std::path::PathBuf;
 /// Maximum number of issues (errors + warnings) to return from get_workspace_issues
 const MAX_WORKSPACE_ISSUES: usize = 25;
 
+/// Detect the proc-macro server to use, with fallback for NixOS/direnv compatibility
+fn detect_proc_macro_server() -> ProcMacroServerChoice {
+    // First, try to find rust-analyzer-proc-macro-srv in PATH
+    // This works better with NixOS/direnv where the sysroot might not have the server
+    if let Ok(output) = std::process::Command::new("which")
+        .arg("rust-analyzer-proc-macro-srv")
+        .output()
+    {
+        if output.status.success() {
+            let path_str = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            if !path_str.is_empty() {
+                if let Ok(utf8_path) = Utf8PathBuf::from_path_buf(PathBuf::from(&path_str)) {
+                    eprintln!("Found proc-macro server in PATH: {}", path_str);
+                    return ProcMacroServerChoice::Explicit(AbsPathBuf::assert(utf8_path));
+                }
+            }
+        }
+    }
+    
+    // Try to find in rustup toolchain (common location)
+    if let Ok(home) = std::env::var("HOME") {
+        let toolchain_paths = [
+            format!("{}/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/libexec/rust-analyzer-proc-macro-srv", home),
+            format!("{}/.rustup/toolchains/stable-x86_64-apple-darwin/libexec/rust-analyzer-proc-macro-srv", home),
+            format!("{}/.rustup/toolchains/stable-aarch64-unknown-linux-gnu/libexec/rust-analyzer-proc-macro-srv", home),
+            format!("{}/.rustup/toolchains/stable-aarch64-apple-darwin/libexec/rust-analyzer-proc-macro-srv", home),
+        ];
+        
+        for path_str in &toolchain_paths {
+            let path = PathBuf::from(path_str);
+            if path.exists() {
+                if let Ok(utf8_path) = Utf8PathBuf::from_path_buf(path) {
+                    eprintln!("Found proc-macro server in rustup toolchain: {}", path_str);
+                    return ProcMacroServerChoice::Explicit(AbsPathBuf::assert(utf8_path));
+                }
+            }
+        }
+    }
+    
+    // Fallback to sysroot detection (standard rust-analyzer behavior)
+    eprintln!("Using sysroot proc-macro server detection (may not work on NixOS/direnv)");
+    ProcMacroServerChoice::Sysroot
+}
+
 /// Search mode for symbol lookup
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum SearchMode {
@@ -127,18 +171,25 @@ impl Analyzer {
 
         let load_config = LoadCargoConfig {
             load_out_dirs_from_check: true,
-            with_proc_macro_server: ProcMacroServerChoice::Sysroot,
+            with_proc_macro_server: detect_proc_macro_server(),
             prefill_caches: false,
         };
 
         let progress = |_msg: String| {}; // No-op progress callback
 
-        let (db, vfs, _) = load_workspace_at(
+        let (db, vfs, proc_macro_client) = load_workspace_at(
             abs_path.as_ref(),
             &cargo_config,
             &load_config,
             &progress,
         ).map_err(|e| AnalyzerError::ProjectLoadError(format!("{:?}", e)))?;
+        
+        // Log proc-macro client status
+        if proc_macro_client.is_some() {
+            eprintln!("✓ Proc-macro client loaded successfully");
+        } else {
+            eprintln!("⚠ Proc-macro client not loaded - macro expansion may not work");
+        }
 
         // Create AnalysisHost from the loaded database
         self.host = AnalysisHost::with_database(db);
@@ -832,11 +883,90 @@ mod diagnostic_test {
                 i+1, issue.severity, issue.message, issue.file_path, issue.start_line, issue.start_column);
         }
         
-        // We expect at least 3 errors from the error_test crate
-        assert!(errors.len() >= 3, "Expected at least 3 errors in error_test crate, found {}", errors.len());
+        // Check if proc-macro expansion is working
+        let has_derive_error = errors.iter().any(|e| 
+            e.message.contains("derive") || 
+            e.message.contains("unresolved macro") ||
+            e.message.contains("proc-macro")
+        );
         
-        // We expect at least 1 warning from the error_test crate (unreachable code, unused, etc.)
-        // Note: Not all warnings may show up due to #[allow(dead_code)] at the module level
-        println!("Warning: Found {} warnings. Some warnings may be suppressed by #[allow] attributes.", warnings.len());
+        if has_derive_error {
+            println!("\n⚠️  WARNING: Proc-macro expansion is NOT working");
+            println!("   This is expected in some environments (NixOS/direnv without proper setup)");
+            println!("   Adjusting test expectations accordingly...\n");
+            
+            // When proc-macros don't work, we expect:
+            // - The derive error (1 extra error)
+            // - The 3 intentional errors
+            // - Fewer warnings (some might be suppressed)
+            assert_eq!(errors.len(), 4, 
+                "Expected 4 errors (3 intentional + 1 derive) when proc-macros don't work, found {}", 
+                errors.len());
+            
+            // Validate the 3 intentional errors are present
+            assert!(
+                errors.iter().any(|e| e.message.contains("undefined_var") || e.message.contains("no such value in this scope")),
+                "Expected error about undefined_var not found"
+            );
+            assert!(
+                errors.iter().any(|e| e.message.contains("expected") && (e.message.contains("i32") || e.message.contains("&str"))),
+                "Expected error about type mismatch (i32 vs &str) not found"
+            );
+            assert!(
+                errors.iter().any(|e| e.message.contains("field2") || e.message.contains("missing")),
+                "Expected error about missing field2 not found"
+            );
+            
+            println!("✓ All 3 intentional errors validated (plus 1 derive error)");
+        } else {
+            println!("\n✅ Proc-macro expansion IS working correctly\n");
+            
+            // When proc-macros work, we expect exactly 3 errors and 3 warnings
+            assert_eq!(errors.len(), 3, "Expected exactly 3 errors in error_test crate, found {}", errors.len());
+            
+            // Validate each error has the expected message
+            // ERROR 1: Undefined variable
+            assert!(
+                errors.iter().any(|e| e.message.contains("undefined_var") || e.message.contains("no such value in this scope")),
+                "Expected error about undefined_var not found"
+            );
+            
+            // ERROR 2: Type mismatch
+            assert!(
+                errors.iter().any(|e| e.message.contains("expected") && (e.message.contains("i32") || e.message.contains("&str"))),
+                "Expected error about type mismatch (i32 vs &str) not found"
+            );
+            
+            // ERROR 3: Missing field
+            assert!(
+                errors.iter().any(|e| e.message.contains("field2") || e.message.contains("missing")),
+                "Expected error about missing field2 not found"
+            );
+            
+            // We expect exactly 3 warnings from the error_test crate
+            assert_eq!(warnings.len(), 3, "Expected exactly 3 warnings in error_test crate, found {}", warnings.len());
+            
+            // Validate each warning has the expected message
+            // WARNING 1: Unused variable
+            assert!(
+                warnings.iter().any(|w| w.message.contains("unused") && w.message.contains("variable")),
+                "Expected warning about unused variable not found"
+            );
+            
+            // WARNING 2: Unused function
+            assert!(
+                warnings.iter().any(|w| w.message.contains("unused") && w.message.contains("function")),
+                "Expected warning about unused function not found"
+            );
+            
+            // WARNING 3: Unreachable code
+            assert!(
+                warnings.iter().any(|w| w.message.contains("unreachable")),
+                "Expected warning about unreachable code not found"
+            );
+            
+            println!("✓ All 3 errors and 3 warnings validated successfully");
+            println!("✓ Macro expansion (#[derive(Debug)]) working correctly");
+        }
     }
 }

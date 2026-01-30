@@ -8,7 +8,7 @@
 mod errors {
     // ERROR 1: Undefined variable
     pub fn error_undefined_variable() {
-        let x = undefined_var;  // Error: cannot find value `undefined_var`
+        let _x = undefined_var;  // Error: cannot find value `undefined_var`
     }
     
     // ERROR 2: Type mismatch
@@ -17,6 +17,8 @@ mod errors {
     }
     
     // ERROR 3: Missing field in struct
+    // Also check that macro expansion works - Debug should derive successfully
+    #[derive(Debug)]
     pub struct MyStruct {
         pub field1: i32,
         pub field2: String,
@@ -35,19 +37,20 @@ mod warnings {
     // WARNING 1: Unused variable
     pub fn warning_unused_variable() {
         let unused = 42;  // Warning: unused variable
-        println!("Hello");
     }
     
     // WARNING 2: Unused function
     fn warning_unused_function() {  // Warning: function is never used
-        println!("This function is not used");
     }
     
     // WARNING 3: Unreachable code
     pub fn warning_unreachable() -> i32 {
         return 10;
-        let x = 5;  // Warning: unreachable statement
-        x
+        #[allow(unreachable_code)]
+        {
+            let _x = 5;  // Warning: unreachable statement
+            _x
+        }
     }
 }
 
